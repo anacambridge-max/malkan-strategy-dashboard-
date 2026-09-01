@@ -1,14 +1,6 @@
 import { NextResponse } from 'next/server';
-import { candlesToOhlcv, getHistoricalCandles, getHistoricalDailyCandles } from '@/lib/upstox';
+import { candlesToOhlcv, getHistoricalCandles, getHistoricalDailyCandles, getNseFnoUniverse } from '@/lib/upstox';
 import { scanGfs } from '@/lib/gfs-scan';
-
-const UNIVERSE = [
-  { symbol: 'INFY', company: 'Infosys', sector: 'IT', instrumentKey: 'NSE_EQ|INE009A01021' },
-  { symbol: 'RELIANCE', company: 'Reliance Industries', sector: 'Energy', instrumentKey: 'NSE_EQ|INE002A01018' },
-  { symbol: 'TCS', company: 'Tata Consultancy Services', sector: 'IT', instrumentKey: 'NSE_EQ|INE467B01029' },
-  { symbol: 'HDFCBANK', company: 'HDFC Bank', sector: 'Banking', instrumentKey: 'NSE_EQ|INE040A01034' },
-  { symbol: 'SBIN', company: 'State Bank of India', sector: 'Banking', instrumentKey: 'NSE_EQ|INE062A01020' },
-] as const;
 
 function yearsAgo(date: string, years: number) {
   const d = new Date(`${date}T00:00:00Z`);
@@ -25,39 +17,71 @@ function indiaDate() {
   }).format(new Date());
 }
 
+type UniverseStock = Awaited<ReturnType<typeof getNseFnoUniverse>>[number];
+
+async function scanOne(stock: UniverseStock, toDate: string, dailyFromDate: string, higherTimeframeFromDate: string) {
+  try {
+    const [dailyRaw, weeklyRaw, monthlyRaw] = await Promise.all([
+      getHistoricalDailyCandles(stock.instrumentKey, toDate, dailyFromDate),
+      getHistoricalCandles(stock.instrumentKey, 'weeks', 1, toDate, higherTimeframeFromDate),
+      getHistoricalCandles(stock.instrumentKey, 'months', 1, toDate, higherTimeframeFromDate),
+    ]);
+
+    const daily = candlesToOhlcv(dailyRaw);
+    const weekly = candlesToOhlcv(weeklyRaw);
+    const monthly = candlesToOhlcv(monthlyRaw);
+    const scan = scanGfs(stock.symbol, daily, weekly, monthly);
+
+    return {
+      ...stock,
+      sector: 'NSE F&O',
+      candleCount: daily.length,
+      ok: Boolean(scan),
+      scan: scan ?? undefined,
+      error: scan ? undefined : 'Insufficient historical candles for GFS calculation',
+    };
+  } catch (error) {
+    return {
+      ...stock,
+      sector: 'NSE F&O',
+      candleCount: 0,
+      ok: false,
+      error: error instanceof Error ? error.message : 'Unknown scanner error',
+    };
+  }
+}
+
 export async function GET() {
   const toDate = indiaDate();
   const dailyFromDate = yearsAgo(toDate, 10);
   const higherTimeframeFromDate = '2000-01-01';
-  const results = [];
 
-  for (const stock of UNIVERSE) {
-    try {
-      const [dailyRaw, weeklyRaw, monthlyRaw] = await Promise.all([
-        getHistoricalDailyCandles(stock.instrumentKey, toDate, dailyFromDate),
-        getHistoricalCandles(stock.instrumentKey, 'weeks', 1, toDate, higherTimeframeFromDate),
-        getHistoricalCandles(stock.instrumentKey, 'months', 1, toDate, higherTimeframeFromDate),
-      ]);
-      const daily = candlesToOhlcv(dailyRaw);
-      const weekly = candlesToOhlcv(weeklyRaw);
-      const monthly = candlesToOhlcv(monthlyRaw);
-      const scan = scanGfs(stock.symbol, daily, weekly, monthly);
-      results.push({ ...stock, candleCount: daily.length, ok: true, scan });
-    } catch (error) {
-      results.push({
-        ...stock,
-        candleCount: 0,
-        ok: false,
-        error: error instanceof Error ? error.message : 'Unknown scanner error',
-      });
+  try {
+    const universe = await getNseFnoUniverse();
+    const results: Awaited<ReturnType<typeof scanOne>>[] = [];
+
+    // Keep concurrency bounded so a full-universe scan does not overwhelm the
+    // market-data API. The scanner still evaluates every active F&O underlying.
+    const batchSize = 6;
+    for (let i = 0; i < universe.length; i += batchSize) {
+      const batch = universe.slice(i, i + batchSize);
+      results.push(...await Promise.all(batch.map((stock) => scanOne(stock, toDate, dailyFromDate, higherTimeframeFromDate))));
     }
-  }
 
-  return NextResponse.json({
-    ok: results.some((item) => item.ok),
-    scanned: results.length,
-    successful: results.filter((item) => item.ok).length,
-    generatedAt: new Date().toISOString(),
-    results,
-  });
+    return NextResponse.json({
+      ok: results.some((item) => item.ok),
+      universe: 'NSE F&O equities',
+      scanned: results.length,
+      successful: results.filter((item) => item.ok).length,
+      ready: results.filter((item) => item.scan?.ready).length,
+      generatedAt: new Date().toISOString(),
+      results,
+    });
+  } catch (error) {
+    return NextResponse.json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Unable to build NSE F&O universe',
+      results: [],
+    }, { status: 500 });
+  }
 }
