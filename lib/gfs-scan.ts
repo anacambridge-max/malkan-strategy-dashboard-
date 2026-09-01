@@ -18,19 +18,15 @@ export type GfsScan = {
   reasons:string[];
 };
 
-function firstSwingHighAbove(candles:Candle[], entry:number, lookback=40):number {
-  const highs = candles.slice(-lookback-1,-1).map(c=>c.high).filter(h=>h>entry);
-  return highs.length ? Math.min(...highs) : entry;
-}
-
 /**
- * Evaluate daily history using the provider's native weekly/monthly candles.
+ * Evaluate the GFS setup using the provider's native weekly/monthly candles.
  * This keeps the higher-timeframe RSI aligned with charting platforms.
  *
- * GFS long setup follows the 60/60/near-40 framework. The latest daily
- * candle is treated as the signal/alert candle: entry above its high and
- * initial stop below its low. The nearest prior swing high is the first
- * target/resistance.
+ * Trade plan:
+ * - Entry: above the latest daily signal candle high.
+ * - Stop: below the latest daily signal candle low.
+ * - Target: previous daily swing high, excluding the current signal candle.
+ * - A setup is READY only when the resulting R:R is at least 1:3.
  */
 export function scanGfs(symbol:string, daily:Candle[], weekly?:Candle[], monthly?:Candle[]):GfsScan|null {
   if(daily.length<80) return null;
@@ -47,10 +43,11 @@ export function scanGfs(symbol:string, daily:Candle[], weekly?:Candle[], monthly
   const confirmation=last.close>last.open;
   const relVol=relativeVolume(daily.map(x=>x.volume));
 
-  // GFS trade plan: buy above the green signal candle and protect below it.
+  // Use the prior swing high as the realistic resistance/target. Never use a
+  // high from the current signal candle, otherwise R:R can collapse toward 0.
   const entry=last.high;
   const sl=last.low;
-  const target=firstSwingHighAbove(daily,entry,40);
+  const target=previousSwingHigh(daily,20);
 
   const result=evaluateGfs({
     monthlyRsi:m,
