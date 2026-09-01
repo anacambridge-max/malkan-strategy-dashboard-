@@ -12,7 +12,11 @@ const UNIVERSE = [
 
 export async function GET() {
   const toDate = new Date().toISOString().slice(0, 10);
-  const fromDate = '2024-01-01';
+  // RSI needs a long warm-up, especially on monthly bars. Starting in 2024
+  // leaves only ~32 monthly observations and can materially distort RSI.
+  // Keep several years of daily history so the weekly/monthly Wilder RSI
+  // converges to the value shown by charting platforms.
+  const fromDate = '2010-01-01';
   const results = [];
 
   for (const stock of UNIVERSE) {
