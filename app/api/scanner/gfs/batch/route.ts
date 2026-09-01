@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { candlesToOhlcv, getHistoricalCandles, getHistoricalDailyCandles, getNseFnoUniverse } from '@/lib/upstox';
-import { scanGfs } from '@/lib/gfs-scan';
+import { GfsScan, scanGfs } from '@/lib/gfs-scan';
 
 function yearsAgo(date: string, years: number) {
   const d = new Date(`${date}T00:00:00Z`);
@@ -19,7 +19,20 @@ function indiaDate() {
 
 type UniverseStock = Awaited<ReturnType<typeof getNseFnoUniverse>>[number];
 
-async function scanOne(stock: UniverseStock, toDate: string, dailyFromDate: string, higherTimeframeFromDate: string) {
+type ScanResult = UniverseStock & {
+  sector: string;
+  candleCount: number;
+  ok: boolean;
+  scan?: GfsScan;
+  error?: string;
+};
+
+async function scanOne(
+  stock: UniverseStock,
+  toDate: string,
+  dailyFromDate: string,
+  higherTimeframeFromDate: string,
+): Promise<ScanResult> {
   try {
     const [dailyRaw, weeklyRaw, monthlyRaw] = await Promise.all([
       getHistoricalDailyCandles(stock.instrumentKey, toDate, dailyFromDate),
@@ -46,6 +59,7 @@ async function scanOne(stock: UniverseStock, toDate: string, dailyFromDate: stri
       sector: 'NSE F&O',
       candleCount: 0,
       ok: false,
+      scan: undefined,
       error: error instanceof Error ? error.message : 'Unknown scanner error',
     };
   }
@@ -58,14 +72,18 @@ export async function GET() {
 
   try {
     const universe = await getNseFnoUniverse();
-    const results: Awaited<ReturnType<typeof scanOne>>[] = [];
+    const results: ScanResult[] = [];
 
-    // Keep concurrency bounded so a full-universe scan does not overwhelm the
-    // market-data API. The scanner still evaluates every active F&O underlying.
+    // Full-universe scan: every active NSE F&O equity underlying is evaluated.
+    // Keep concurrency bounded so Upstox is not overwhelmed by the 3 historical
+    // candle requests required per stock (daily + weekly + monthly).
     const batchSize = 6;
     for (let i = 0; i < universe.length; i += batchSize) {
       const batch = universe.slice(i, i + batchSize);
-      results.push(...await Promise.all(batch.map((stock) => scanOne(stock, toDate, dailyFromDate, higherTimeframeFromDate))));
+      const batchResults = await Promise.all(
+        batch.map((stock) => scanOne(stock, toDate, dailyFromDate, higherTimeframeFromDate)),
+      );
+      results.push(...batchResults);
     }
 
     return NextResponse.json({
