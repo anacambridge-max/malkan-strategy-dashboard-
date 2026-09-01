@@ -8,14 +8,18 @@ function getToken() {
   return token;
 }
 
-export async function getHistoricalDailyCandles(
+export type HistoricalUnit = 'days' | 'weeks' | 'months';
+
+export async function getHistoricalCandles(
   instrumentKey: string,
+  unit: HistoricalUnit,
+  interval: 1,
   toDate: string,
   fromDate?: string,
 ): Promise<UpstoxCandle[]> {
   const encodedKey = encodeURIComponent(instrumentKey);
   const from = fromDate ? `/${fromDate}` : '';
-  const url = `${BASE_URL}/historical-candle/${encodedKey}/days/1/${toDate}${from}`;
+  const url = `${BASE_URL}/historical-candle/${encodedKey}/${unit}/${interval}/${toDate}${from}`;
   const response = await fetch(url, {
     headers: {
       Accept: 'application/json',
@@ -33,6 +37,14 @@ export async function getHistoricalDailyCandles(
     throw new Error('Unexpected Upstox historical-candle response');
   }
   return body.data.candles as UpstoxCandle[];
+}
+
+export async function getHistoricalDailyCandles(
+  instrumentKey: string,
+  toDate: string,
+  fromDate?: string,
+): Promise<UpstoxCandle[]> {
+  return getHistoricalCandles(instrumentKey, 'days', 1, toDate, fromDate);
 }
 
 export function candlesToOhlcv(candles: UpstoxCandle[]) {
