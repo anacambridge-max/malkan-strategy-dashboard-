@@ -18,6 +18,10 @@ function indiaDate() {
   }).format(new Date());
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 type UniverseStock = Awaited<ReturnType<typeof getNseFnoUniverse>>[number];
 
 type ScanResult = UniverseStock & {
@@ -28,15 +32,24 @@ type ScanResult = UniverseStock & {
   error?: string;
 };
 
+type ScanResponse = {
+  ok: boolean;
+  universe: string;
+  scanned: number;
+  successful: number;
+  ready: number;
+  generatedAt: string;
+  results: ScanResult[];
+};
+
 async function scanOne(
   stock: UniverseStock,
   toDate: string,
   dailyFromDate: string,
 ): Promise<ScanResult> {
   try {
-    // One daily request per stock. Weekly/monthly candles are reconstructed
-    // from the same daily OHLCV series, which gives the correct timeframe
-    // closes while avoiding 3x API traffic across the 200+ stock universe.
+    // Use one daily request per stock and reconstruct weekly/monthly candles
+    // locally. This preserves the RSI inputs while avoiding 3x API traffic.
     const dailyRaw = await getHistoricalDailyCandles(
       stock.instrumentKey,
       toDate,
@@ -78,34 +91,63 @@ async function scanOne(
   }
 }
 
-export async function GET() {
+async function runFullScan(): Promise<ScanResponse> {
   const toDate = indiaDate();
   const dailyFromDate = yearsAgo(toDate, 10);
+  const universe = await getNseFnoUniverse();
+  const results: ScanResult[] = [];
 
+  // Keep only two historical requests in flight and add a small pause between
+  // batches. Upstox documents 50 requests/sec and 500 requests/min for standard
+  // APIs, but pacing avoids bursts and makes the scanner resilient to transient
+  // 429 responses during a full-universe refresh.
+  const batchSize = 2;
+  for (let i = 0; i < universe.length; i += batchSize) {
+    const batch = universe.slice(i, i + batchSize);
+    const batchResults = await Promise.all(
+      batch.map((stock) => scanOne(stock, toDate, dailyFromDate)),
+    );
+    results.push(...batchResults);
+    if (i + batchSize < universe.length) await sleep(250);
+  }
+
+  return {
+    ok: results.some((item) => item.ok),
+    universe: 'NSE F&O equities',
+    scanned: results.length,
+    successful: results.filter((item) => item.ok).length,
+    ready: results.filter((item) => item.scan?.ready).length,
+    generatedAt: new Date().toISOString(),
+    results,
+  };
+}
+
+// Dashboard and GFS Scanner can mount at the same time. Without a shared
+// in-flight promise they would each start another 210-stock scan and quickly
+// trigger Upstox 429s. Reuse the same scan for 60 seconds.
+let scanCache: { expiresAt: number; response: ScanResponse } | null = null;
+let scanInFlight: Promise<ScanResponse> | null = null;
+
+async function getCachedScan() {
+  if (scanCache && scanCache.expiresAt > Date.now()) return scanCache.response;
+
+  if (!scanInFlight) {
+    scanInFlight = runFullScan()
+      .then((response) => {
+        scanCache = { expiresAt: Date.now() + 60_000, response };
+        return response;
+      })
+      .finally(() => {
+        scanInFlight = null;
+      });
+  }
+
+  return scanInFlight;
+}
+
+export async function GET() {
   try {
-    const universe = await getNseFnoUniverse();
-    const results: ScanResult[] = [];
-
-    // Full live NSE F&O universe. Bounded concurrency keeps the historical-data
-    // API stable while scanning every stock instead of only a demo shortlist.
-    const batchSize = 6;
-    for (let i = 0; i < universe.length; i += batchSize) {
-      const batch = universe.slice(i, i + batchSize);
-      const batchResults = await Promise.all(
-        batch.map((stock) => scanOne(stock, toDate, dailyFromDate)),
-      );
-      results.push(...batchResults);
-    }
-
-    return NextResponse.json({
-      ok: results.some((item) => item.ok),
-      universe: 'NSE F&O equities',
-      scanned: results.length,
-      successful: results.filter((item) => item.ok).length,
-      ready: results.filter((item) => item.scan?.ready).length,
-      generatedAt: new Date().toISOString(),
-      results,
-    });
+    return NextResponse.json(await getCachedScan());
   } catch (error) {
     return NextResponse.json({
       ok: false,
