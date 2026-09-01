@@ -1,15 +1,17 @@
-import { aggregateMonthly, aggregateWeekly, Candle, previousSwingHigh, relativeVolume, rsi, swingLow } from './indicators';
+import { Candle, previousSwingHigh, relativeVolume, rsi, swingLow } from './indicators';
 import { evaluateGfs } from './malkan-engine';
 
 export type GfsScan = { symbol:string; monthlyRsi:number; weeklyRsi:number; dailyRsi:number; dailyRsiPrevious:number; entry:number; stopLoss:number; target:number; relativeVolume:number; riskReward:number; ready:boolean; score:number; setupType:string; reasons:string[] };
 
-/** Evaluate a completed daily history. This is deliberately conservative: no signal is emitted unless
- * the higher-timeframe RSI alignment, daily 40-zone recovery and confirmation candle are present. */
-export function scanGfs(symbol:string, daily:Candle[]):GfsScan|null {
+/** Evaluate daily history using the provider's native weekly/monthly candles.
+ * This avoids small timeframe-boundary differences from rebuilding higher
+ * timeframes locally and keeps RSI aligned with charting platforms. */
+export function scanGfs(symbol:string, daily:Candle[], weekly?:Candle[], monthly?:Candle[]):GfsScan|null {
   if(daily.length<80) return null;
-  const weekly=aggregateWeekly(daily), monthly=aggregateMonthly(daily);
-  if(weekly.length<20 || monthly.length<20) return null;
-  const dailyCloses=daily.map(x=>x.close), weeklyCloses=weekly.map(x=>x.close), monthlyCloses=monthly.map(x=>x.close);
+  const weeklyCandles=weekly ?? [];
+  const monthlyCandles=monthly ?? [];
+  if(weeklyCandles.length<20 || monthlyCandles.length<20) return null;
+  const dailyCloses=daily.map(x=>x.close), weeklyCloses=weeklyCandles.map(x=>x.close), monthlyCloses=monthlyCandles.map(x=>x.close);
   const m=rsi(monthlyCloses), w=rsi(weeklyCloses), d=rsi(dailyCloses), prev=rsi(dailyCloses.slice(0,-1));
   const last=daily[daily.length-1], prevC=daily[daily.length-2];
   const confirmation=last.close>last.open && last.close>prevC.high;
