@@ -10,13 +10,18 @@ const UNIVERSE = [
   { symbol: 'SBIN', company: 'State Bank of India', sector: 'Banking', instrumentKey: 'NSE_EQ|INE062A01020' },
 ] as const;
 
+function yearsAgo(date: string, years: number) {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCFullYear(d.getUTCFullYear() - years);
+  return d.toISOString().slice(0, 10);
+}
+
 export async function GET() {
   const toDate = new Date().toISOString().slice(0, 10);
-  // RSI needs a long warm-up, especially on monthly bars. Starting in 2024
-  // leaves only ~32 monthly observations and can materially distort RSI.
-  // Keep several years of daily history so the weekly/monthly Wilder RSI
-  // converges to the value shown by charting platforms.
-  const fromDate = '2010-01-01';
+  // Upstox V3 daily candles allow a maximum retrieval window of 1 decade.
+  // Use the full 10-year window so monthly/weekly RSI has enough Wilder-RSI
+  // warm-up history without exceeding Upstox's date-range limit.
+  const fromDate = yearsAgo(toDate, 10);
   const results = [];
 
   for (const stock of UNIVERSE) {
