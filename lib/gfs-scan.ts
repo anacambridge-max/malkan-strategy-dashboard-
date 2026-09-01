@@ -23,5 +23,5 @@ export function scanGfs(symbol:string, daily:Candle[]):GfsScan|null {
   if(result.dailyTurningUp) reasons.push('Daily RSI is turning upward');
   if(confirmation) reasons.push('Confirmation candle cleared prior high');
   if(result.volumeConfirmed) reasons.push(`Relative volume ${relVol.toFixed(2)}x`);
-  return {symbol,monthlyRsi:m,weeklyRsi:w,dailyRsi:d,dailyRsiPrevious:prev,entry,stopLoss:sl,target,riskReward:result.riskReward,ready:result.gfsReady,score:result.score,setupType:result.setupType,reasons};
+  return {symbol,monthlyRsi:m,weeklyRsi:w,dailyRsi:d,dailyRsiPrevious:prev,entry,stopLoss:sl,target,relativeVolume:relVol,riskReward:result.riskReward,ready:result.gfsReady,score:result.score,setupType:result.setupType,reasons};
 }
