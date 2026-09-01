@@ -70,8 +70,9 @@ let fnoUniverseCache: { expiresAt: number; stocks: FnoUniverseStock[] } | null =
 
 /**
  * Build the live NSE F&O equity universe from Upstox's daily BOD instrument file.
- * We collect equity underlyings that currently have an NSE_FO contract, then
- * map them back to their NSE_EQ instrument keys for historical equity candles.
+ * The published NSE file is gzip-compressed, so it must be decompressed before
+ * JSON parsing. We collect equity underlyings that currently have an NSE_FO
+ * contract, then map them back to their NSE_EQ instrument keys.
  */
 export async function getNseFnoUniverse(): Promise<FnoUniverseStock[]> {
   if (fnoUniverseCache && fnoUniverseCache.expiresAt > Date.now()) {
@@ -86,7 +87,22 @@ export async function getNseFnoUniverse(): Promise<FnoUniverseStock[]> {
     throw new Error(`Unable to load Upstox NSE instrument master (HTTP ${response.status})`);
   }
 
-  const instruments = await response.json() as InstrumentRecord[];
+  const compressed = Buffer.from(await response.arrayBuffer());
+  let jsonText: string;
+  try {
+    const { gunzipSync } = await import('node:zlib');
+    jsonText = gunzipSync(compressed).toString('utf8');
+  } catch (error) {
+    throw new Error(`Unable to decompress Upstox NSE instrument master: ${error instanceof Error ? error.message : 'invalid gzip data'}`);
+  }
+
+  let instruments: InstrumentRecord[];
+  try {
+    instruments = JSON.parse(jsonText) as InstrumentRecord[];
+  } catch (error) {
+    throw new Error(`Unable to parse Upstox NSE instrument master JSON: ${error instanceof Error ? error.message : 'invalid JSON'}`);
+  }
+
   if (!Array.isArray(instruments)) {
     throw new Error('Unexpected Upstox NSE instrument-master response');
   }
@@ -95,7 +111,12 @@ export async function getNseFnoUniverse(): Promise<FnoUniverseStock[]> {
   const fnoSymbols = new Set<string>();
 
   for (const instrument of instruments) {
-    if (instrument.segment === 'NSE_EQ' && instrument.instrument_type === 'EQ' && instrument.instrument_key && instrument.trading_symbol) {
+    if (
+      instrument.segment === 'NSE_EQ' &&
+      instrument.instrument_type === 'EQ' &&
+      instrument.instrument_key &&
+      instrument.trading_symbol
+    ) {
       equities.set(instrument.trading_symbol, instrument);
     }
 
