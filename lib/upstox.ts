@@ -9,6 +9,10 @@ function getToken() {
   return token;
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export type HistoricalUnit = 'days' | 'weeks' | 'months';
 
 export async function getHistoricalCandles(
@@ -21,23 +25,39 @@ export async function getHistoricalCandles(
   const encodedKey = encodeURIComponent(instrumentKey);
   const from = fromDate ? `/${fromDate}` : '';
   const url = `${BASE_URL}/historical-candle/${encodedKey}/${unit}/${interval}/${toDate}${from}`;
-  const response = await fetch(url, {
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${getToken()}`,
-    },
-    cache: 'no-store',
-  });
 
-  const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    const message = body?.errors?.[0]?.message || body?.message || `Upstox returned HTTP ${response.status}`;
-    throw new Error(message);
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const response = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${getToken()}`,
+      },
+      cache: 'no-store',
+    });
+
+    const body = await response.json().catch(() => null);
+
+    if (response.ok) {
+      if (body?.status !== 'success' || !Array.isArray(body?.data?.candles)) {
+        throw new Error('Unexpected Upstox historical-candle response');
+      }
+      return body.data.candles as UpstoxCandle[];
+    }
+
+    if (response.status !== 429 || attempt === maxAttempts) {
+      const message = body?.errors?.[0]?.message || body?.message || `Upstox returned HTTP ${response.status}`;
+      throw new Error(message);
+    }
+
+    const retryAfter = Number(response.headers.get('retry-after'));
+    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+      ? retryAfter * 1000
+      : 1000 * 2 ** (attempt - 1);
+    await sleep(Math.min(waitMs, 15000));
   }
-  if (body?.status !== 'success' || !Array.isArray(body?.data?.candles)) {
-    throw new Error('Unexpected Upstox historical-candle response');
-  }
-  return body.data.candles as UpstoxCandle[];
+
+  throw new Error('Upstox historical-candle request failed after retries');
 }
 
 export async function getHistoricalDailyCandles(
