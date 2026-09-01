@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { candlesToOhlcv, getHistoricalDailyCandles } from '@/lib/upstox';
+import { candlesToOhlcv, getHistoricalCandles, getHistoricalDailyCandles } from '@/lib/upstox';
 import { scanGfs } from '@/lib/gfs-scan';
 
 const UNIVERSE = [
@@ -16,20 +16,33 @@ function yearsAgo(date: string, years: number) {
   return d.toISOString().slice(0, 10);
 }
 
+function indiaDate() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
 export async function GET() {
-  const toDate = new Date().toISOString().slice(0, 10);
-  // Upstox V3 daily candles allow a maximum retrieval window of 1 decade.
-  // Use the full 10-year window so monthly/weekly RSI has enough Wilder-RSI
-  // warm-up history without exceeding Upstox's date-range limit.
-  const fromDate = yearsAgo(toDate, 10);
+  const toDate = indiaDate();
+  const dailyFromDate = yearsAgo(toDate, 10);
+  const higherTimeframeFromDate = '2000-01-01';
   const results = [];
 
   for (const stock of UNIVERSE) {
     try {
-      const raw = await getHistoricalDailyCandles(stock.instrumentKey, toDate, fromDate);
-      const candles = candlesToOhlcv(raw);
-      const scan = scanGfs(stock.symbol, candles);
-      results.push({ ...stock, candleCount: candles.length, ok: true, scan });
+      const [dailyRaw, weeklyRaw, monthlyRaw] = await Promise.all([
+        getHistoricalDailyCandles(stock.instrumentKey, toDate, dailyFromDate),
+        getHistoricalCandles(stock.instrumentKey, 'weeks', 1, toDate, higherTimeframeFromDate),
+        getHistoricalCandles(stock.instrumentKey, 'months', 1, toDate, higherTimeframeFromDate),
+      ]);
+      const daily = candlesToOhlcv(dailyRaw);
+      const weekly = candlesToOhlcv(weeklyRaw);
+      const monthly = candlesToOhlcv(monthlyRaw);
+      const scan = scanGfs(stock.symbol, daily, weekly, monthly);
+      results.push({ ...stock, candleCount: daily.length, ok: true, scan });
     } catch (error) {
       results.push({
         ...stock,
